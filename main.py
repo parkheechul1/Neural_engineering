@@ -4,7 +4,7 @@ from PIL import Image  # For image processing
 
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QListWidget, QTextEdit,
-                             QVideoWidget, QStyle, QSlider, QLabel, QMessageBox)
+                             QStyle, QSlider, QLabel, QMessageBox)
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtCore import QUrl, Qt
@@ -41,7 +41,7 @@ class SummaryApp(QWidget):
 
         # AI 모델 로드 실패 시 사용자에게 알림
         if not image_captioning_pipeline:
-            QMessagggeBox.warning(self, "AI 모델 로드 실패",
+            QMessageBox.warning(self, "AI 모델 로드 실패",
                                 "AI 이미지 캡셔닝 모델을 로드하지 못했습니다. AI 요약 기능이 동작하지 않을 수 있습니다. "
                                 "인터넷 연결을 확인하거나 필요한 라이브러리(torch)를 설치하세요.")
 
