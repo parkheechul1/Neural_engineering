@@ -12,23 +12,3 @@
 4.2 (추가하면 좋을 듯) 사람 본인의 얼굴이 나오는 화면과 그 옆에 영상이 보이는 화면 추가.
 
 5. 4번에서 파악한 부분을 자동으로 요약해주는 것(지능형 AI or 타임대별 중요 내용을 수동으로 코드 기입)이 최종 목적임.
-
-Neural_engineering/  (프로젝트 루트 폴더)
-│
-├── .venv/                  (가상 환경)
-├── .git/
-├── .gitignore
-│
-├── data/                   (1) 테스트용 데이터 폴더
-│   ├── sample_video.mp4
-│   └── sample_timestamps.txt
-│
-├── neural_engineering/     (2) ⭐️ 핵심 소스 코드 폴더
-│   ├── __init__.py         (이 폴더를 '패키지'로 만듦)
-│   ├── main_window.py      (UI: PyQt5 메인 윈도우)
-│   ├── eeg_handler.py      (뇌파: '집중' 구간 분석/처리)
-│   └── video_analyzer.py   (AI: 영상 분석 및 요약)
-│
-├── main.py                 (3) 🚀 프로그램 실행 전용 파일
-│
-└── requirements.txt        (4) 필요한 라이브러리 목록
