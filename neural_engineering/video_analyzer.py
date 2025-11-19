@@ -1,5 +1,5 @@
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE" # DLL 오류 방지용 (이전 문제)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE" # DLL 오류 방지용
 
 import torch
 from moviepy.editor import VideoFileClip

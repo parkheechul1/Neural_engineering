@@ -6,12 +6,10 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtCore import QUrl, Qt, QThread, pyqtSignal
 
-# 1. 다른 모듈에서 필요한 함수들을 import (수정됨)
-from .eeg_handler import load_timestamp_durations_from_file # (이름 변경)
-from .video_analyzer import summarize_audio_duration, get_ai_models # (이름 변경)
+from .eeg_handler import load_timestamp_durations_from_file
+from .video_analyzer import summarize_audio_duration, get_ai_models
 
 
-# 2. Worker 스레드 클래스 (수정됨)
 class Worker(QThread):
     # (타임스탬프, 요약결과, 전체텍스트) 3개를 전달하도록 수정
     summaryReady = pyqtSignal(str, str, str)
@@ -26,7 +24,7 @@ class Worker(QThread):
         self._is_running = True
 
     def run(self):
-        """스레드 시작 시 이 함수가 '백그라운드'에서 실행됩니다."""
+        """스레드 시작 시 이 함수가 '백그라운드'에서 실행"""
         try:
             stt_model, summarizer_model = get_ai_models()
             if not stt_model or not summarizer_model:
@@ -92,7 +90,7 @@ class SummaryApp(QWidget):
         leftLayout = QVBoxLayout()
         rightLayout = QVBoxLayout()
 
-        # --- 왼쪽: 비디오 플레이어 (변경 없음) ---
+        # --- 왼쪽: 비디오 플레이어 ---
         leftLayout.addWidget(self.videoWidget)
         self.mediaPlayer.setVideoOutput(self.videoWidget)
         controlLayout = QHBoxLayout()
@@ -105,7 +103,7 @@ class SummaryApp(QWidget):
         controlLayout.addWidget(self.positionSlider)
         leftLayout.addLayout(controlLayout)
 
-        # --- 오른쪽: 컨트롤 패널 (변경 없음) ---
+        # --- 오른쪽: 컨트롤 패널 ---
         self.loadVideoButton = QPushButton("1. 영상 불러오기 (.mp4 등)")
         self.loadTimestampButton = QPushButton("2. 뇌파 데이터 불러오기 (자동 요약 시작)")
         self.summaryProgressBar = QProgressBar(self)
@@ -141,7 +139,7 @@ class SummaryApp(QWidget):
         self.setWindowTitle('뇌파 집중구간 오디오 요약 (Demo)')
         self.setGeometry(100, 100, 1200, 700)
 
-        # --- 시그널 연결 (변경 없음) ---
+        # --- 시그널 연결 ---
         self.loadVideoButton.clicked.connect(self.loadVideo)
         self.loadTimestampButton.clicked.connect(self.loadTimestamps)
         self.timestampList.currentItemChanged.connect(self.jumpToTimestamp)
@@ -149,7 +147,7 @@ class SummaryApp(QWidget):
         self.mediaPlayer.positionChanged.connect(self.positionChanged)
         self.mediaPlayer.durationChanged.connect(self.durationChanged)
 
-    # --- loadTimestamps (스레드 시작) (수정됨) ---
+    # --- loadTimestamps (스레드 시작) ---
     def loadTimestamps(self):
         """'뇌파 데이터 불러오기' 클릭 시 자동 요약 스레드 시작"""
         if not self.current_video_path:
@@ -183,7 +181,7 @@ class SummaryApp(QWidget):
 
         self.worker_thread.start()
 
-    # --- QThread 시그널 처리 함수 (Slot) (수정됨) ---
+    # --- QThread 시그널 처리 함수 (Slot) ---
     def onSummaryReady(self, timestamp_str, summary_text, full_text):
         """스레드로부터 요약 결과(인자 3개)가 도착하면 호출됨"""
         item_text = f"[{timestamp_str}] {summary_text}"
@@ -206,7 +204,7 @@ class SummaryApp(QWidget):
         if not error and self.summaryProgressBar.value() > 0:
             QMessageBox.information(self, "완료", "모든 집중 구간의 자동 요약이 완료되었습니다.")
 
-    # --- jumpToTimestamp (수정됨) ---
+    # --- jumpToTimestamp ---
     def jumpToTimestamp(self, current_item, previous_item):
         """목록 클릭 시 해당 구간 시작점으로 이동, 탭에 내용 표시"""
         if current_item is None: return
@@ -239,7 +237,7 @@ class SummaryApp(QWidget):
             self.summaryEdit.setText("")
             self.fullTextEdit.setText("")
 
-    # --- 미디어 플레이어 함수들 (변경 없음) ---
+    # --- 미디어 플레이어 함수들 ---
     def playPause(self):
         # (이하 코드는 이전과 동일)
         if self.mediaPlayer.state() == QMediaPlayer.PlayingState:
