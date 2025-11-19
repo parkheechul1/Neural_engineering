@@ -16,5 +16,5 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 4.1 영상을 보는 과정 중에서 "집중"하고 있다고 파악되는 부분이 있을 것임.
 
-5. 4번에서 파악한 부분을 자동으로 요약해줌.
+5. 4번에서 파악한 부분을 자동으로 요약해줌
 
