@@ -1,10 +1,12 @@
 신경공학 팀플
 
-아래 세개 다운받고 시작
+아래 pip 모두 실행 후 진행
+
 pip install -r requirements.txt
-# 혹시 기존에 깔린 게 있다면 삭제
+
+혹시 기존에 깔린 게 있다면 삭제
 pip uninstall torch -y
-# CPU 버전으로 재설치 (그래픽카드 오류 방지)
+CPU 버전으로 재설치 (그래픽카드 오류 방지)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 1. 3-4분정도 되는 강의 영상 시청.

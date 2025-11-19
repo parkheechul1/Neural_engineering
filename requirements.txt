@@ -3,7 +3,6 @@ pandas
 numpy
 scipy
 moviepy
-opencv-python
 Pillow
 transformers
 accelerate
