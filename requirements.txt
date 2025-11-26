@@ -7,4 +7,3 @@ Pillow
 transformers
 accelerate
 sentencepiece
-# torch는 컴퓨터마다(CPU/GPU) 설치 방법이 달라서 제외함. 별도 설치 필요

@@ -15,3 +15,14 @@ env/
 
 # Windows
 Thumbs.db
+
+# --- 프로젝트별 커스텀 무시 설정 ---
+
+# 모든 텍스트 파일 무시 (로그, 테스트 파일 등)
+*.txt
+
+# 단, requirements.txt는 예외 (무시하지 않음)
+!requirements.txt
+
+# (선택)
+!timestamps.txt
