@@ -28,7 +28,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 # Neural Engineering Project: 뇌파 기반 중요 학습 구간 자동 요약 시스템
 
 ## 1. 프로젝트 개요
-본 프로젝트는 사용자가 영상을 시청하는 동안 발생하는 뇌파(EEG)를 분석하여, **인지적으로 집중한 순간(Highlight)**을 자동으로 탐지합니다. 탐지된 구간의 오디오를 텍스트로 변환(STT)하고 AI 요약을 수행하여 학습 효율을 극대화하는 시스템입니다.
+본 프로젝트는 사용자가 영상을 시청하는 동안 발생하는 뇌파(EEG)를 분석하여, 인지적으로 집중한 순간(Highlight)을 자동으로 탐지합니다. 탐지된 구간의 오디오를 텍스트로 변환(STT)하고 AI 요약을 수행하여 학습 효율을 극대화하는 시스템입니다.
 
 ---
 
@@ -76,9 +76,15 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 Neural_engineering/
 ├── main.py                 # 프로그램 진입점 (실행 파일)
 ├── README.md               # 프로젝트 설명서
-├── analysis_log.txt        # 분석 결과 로그 (자동 생성)
+├── analysis_log.txt        # 분석 결과 로직(자동생성)
+├── z_score_graph.png       # 개인별 z_score 수정을 위한 보조 자료
+├── Neural_engineering.iml
+│ 
+│   
 └── neural_engineering/     # 패키지 폴더
     ├── main_window.py      # GUI 구성 및 이벤트 처리
     ├── video_analyzer.py   # AI 요약 (Whisper, KoBART)
+    ├── prompts.py          # 문장 요약을 위한 요약 요청 제미나이 프롬프트 
     └── eeg_handler.py      # 뇌파 신호 처리 및 알고리즘 핵심
+
 ```
