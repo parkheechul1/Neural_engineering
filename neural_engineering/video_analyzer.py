@@ -20,13 +20,12 @@ else:
 # --- AI 모델 로딩 (Whisper) ---
 try:
     from transformers import pipeline
-
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print(f"음성 인식(STT) 장치: {device}")
 
     stt_pipeline = pipeline(
         "automatic-speech-recognition",
-        model="openai/whisper-base", 
+        model="openai/whisper-small",
         device=device
     )
     print("✅ Whisper(STT) 모델 로드 완료.")
@@ -36,35 +35,15 @@ except Exception as e:
     stt_pipeline = None
     print(f"🚨 AI 모델 로드 실패: {e}")
 
-# ▼▼▼ [수정된 부분] 여기가 에러 원인이었습니다! ▼▼▼
 def get_ai_models():
-    # 예전 코드: return stt_pipeline, summarizer_pipeline (X - 에러 발생)
-    # 수정 코드: return stt_pipeline, "Gemini-API" (O - 정상)
     return stt_pipeline, "Gemini-API"
-# ▲▲▲ --------------------------------------- ▲▲▲
-
-def find_available_gemini_model():
-    """사용 가능한 모델 자동 탐색"""
-    if not GOOGLE_API_KEY: return None
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_API_KEY}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            models = response.json().get('models', [])
-            for m in models:
-                if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m['name']:
-                    if 'flash' in m['name'] or '1.5' in m['name']: return m['name']
-            for m in models:
-                if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m['name']:
-                    return m['name']
-    except: pass
-    return "models/gemini-pro"
 
 def summarize_with_gemini(full_text):
     if not GOOGLE_API_KEY: return "(API 키 오류)"
 
-    model_name = find_available_gemini_model()
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+    # ✅ 수정 1: 무료 티어에서 가장 안정적인 'gemini-1.5-flash'를 메인으로 사용
+    # 수정 코드 (1.5 -> 2.5 로 변경)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GOOGLE_API_KEY}"
     
     final_prompt = f"{SYSTEM_PROMPT}\n\n[입력 텍스트]\n{full_text}"
     payload = {"contents": [{"parts": [{"text": final_prompt}]}]}
@@ -72,12 +51,30 @@ def summarize_with_gemini(full_text):
 
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload))
+        
         if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-        else:
-            return f"(API 에러: {response.status_code})"
+            try:
+                return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            except KeyError:
+                return "(응답 형식 오류 - 안전 필터 등에 걸렸을 수 있음)"
+        
+        # ✅ 수정 2: 에러 코드를 명확하게 반환하여 디버깅 돕기
+        error_msg = f"(API 에러: {response.status_code})"
+        try:
+            # 구글이 보내준 상세 에러 메시지가 있다면 같이 표시
+            error_json = response.json()
+            if 'error' in error_json:
+                error_msg += f" {error_json['error'].get('message', '')}"
+        except:
+            pass
+            
+        print(f"🚨 Gemini 호출 실패: {error_msg}") # 콘솔에도 출력
+        return error_msg
+
     except Exception as e:
         return f"(통신 실패: {e})"
+
+# (summarize_with_fallback 함수는 이제 필요 없으므로 삭제하거나 두셔도 됩니다)
 
 def summarize_audio_duration(video_path, start_sec, end_sec):
     if not stt_pipeline: return "STT 모델 없음", "요약 불가"
@@ -85,6 +82,10 @@ def summarize_audio_duration(video_path, start_sec, end_sec):
     try:
         with VideoFileClip(video_path) as video:
             audio_clip = video.subclip(start_sec, end_sec).audio
+            # 오디오가 없는 경우 처리
+            if audio_clip is None:
+                 return "(오디오 없음)", "(내용 없음)"
+            
             audio_array = audio_clip.to_soundarray(fps=16000)
             if audio_array.ndim > 1: audio_array = audio_array.mean(axis=1)
             audio_array = audio_array.astype(np.float32)
@@ -96,10 +97,13 @@ def summarize_audio_duration(video_path, start_sec, end_sec):
 
         if not full_text: return "(음성 없음)", "(내용 없음)"
 
-        if len(full_text) < 5: summary_text = full_text
-        else: summary_text = summarize_with_gemini(full_text)
+        if len(full_text) < 5: 
+            summary_text = full_text # 너무 짧으면 요약 안 함
+        else: 
+            summary_text = summarize_with_gemini(full_text)
 
         return full_text, summary_text 
 
     except Exception as e:
+        print(f"오디오 처리 중 오류: {e}")
         return f"오류: {e}", "오류"

@@ -7,8 +7,8 @@ __pycache__/
 # Virtual Environment
 venv/
 .venv/
-env/
-.env/
+env
+.env
 
 # IntelliJ
 .idea/

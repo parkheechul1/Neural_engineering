@@ -32,40 +32,49 @@ class Worker(QThread):
 
             # 1. 뇌파 분석 실행 (여기서 1차 로그가 저장됨)
             durations = load_timestamp_durations_from_file(self.timestamp_path, self.z_threshold)
-            total_tasks = len(durations)
+            
+            # [필터링] 30초 이후에 시작된 구간만 남기기 (초반 멍 때리기 구간 제외)
+            valid_durations = [d for d in durations if d[0] >= 30.0]
+            total_tasks = len(valid_durations)
 
             if total_tasks == 0:
-                raise Exception("집중 구간이 없습니다.")
+                # 30초 이후에 잡힌 게 없으면 안내 메시지
+                print("30초 이후 유효한 집중 구간이 없습니다.")
+                self.finished.emit()
+                return
 
-            # ▼▼▼ [핵심] 로그 파일에 구분선 추가 ▼▼▼
-            try:
-                with open("analysis_log.txt", "a", encoding="utf-8") as f:
-                    f.write("\n" + "="*40 + "\n")
-                    f.write(f"   [AI 내용 분석 결과] (총 {total_tasks}개 구간)\n")
-                    f.write("="*40 + "\n")
-            except Exception as e:
-                print(f"로그 파일 열기 실패: {e}")
-            # ▲▲▲ -------------------------------- ▲▲▲
+             # 로그 헤더 작성
+            with open("analysis_log.txt", "a", encoding="utf-8") as f:
+                f.write("\n" + "="*40 + "\n")
+                f.write(f"   [AI 심층 분석] (유효 구간: {total_tasks}개)\n")
+                f.write(f"   *전략: 초반 30초 제외 + 앞뒤 5초 문맥 확보\n")
+                f.write("="*40 + "\n")   
 
             # 2. 구간별 AI 요약 실행
-            for i, (start_sec, end_sec) in enumerate(durations):
+            for i, (start_sec, end_sec) in enumerate(valid_durations):
                 if not self._is_running: break
+
+                # ▼▼▼ [핵심] 앞뒤 5초씩 살 붙이기 (Padding) ▼▼▼
+                # 시작은 0초보다 작아질 수 없으므로 max 사용
+                padded_start = max(0, start_sec - 5.0)
+                # 끝은 영상 길이를 넘을 수 없지만, video_analyzer에서 알아서 잘라줌
+                padded_end = end_sec + 5.0
+                # ▲▲▲ --------------------------------------- ▲▲▲
 
                 timestamp_str = f"{start_sec:.2f} s - {end_sec:.2f} s"
                 
-                # Gemini + Whisper 실행
-                full_text, summary_text = summarize_audio_duration(self.video_path, start_sec, end_sec)
+                # Gemini에게는 '넉넉한 시간(padded)'을 줍니다.
+                full_text, summary_text = summarize_audio_duration(self.video_path, padded_start, padded_end)
 
-                # ▼▼▼ [핵심] 요약된 내용을 로그 파일에 덧붙여 쓰기 (Append) ▼▼▼
+                # 로그 저장
                 try:
                     with open("analysis_log.txt", "a", encoding="utf-8") as f:
-                        f.write(f"\n⏰ 구간: {timestamp_str}\n")
-                        f.write(f"   🗣️ 원본: {full_text}\n")
+                        f.write(f"\n⏰ 핵심 구간: {timestamp_str} (분석: {padded_start:.1f}~{padded_end:.1f}s)\n")
+                        f.write(f"   🗣️ 원본(확장): {full_text}\n")
                         f.write(f"   📝 요약: {summary_text}\n")
                         f.write("-" * 30 + "\n")
                 except Exception as e:
                     print(f"로그 작성 실패: {e}")
-                # ▲▲▲ -------------------------------------------------- ▲▲▲
 
                 self.summaryReady.emit(timestamp_str, summary_text, full_text)
                 self.progressUpdated.emit(i + 1, total_tasks)
