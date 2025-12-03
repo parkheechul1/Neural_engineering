@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, resample  # resample 추가
 from datetime import datetime
 
 # --- [그래프 설정] ---
@@ -41,6 +41,41 @@ def get_latest_rawdata_path(base_path="C:/MAVE_RawData"):
         return os.path.abspath(local_file)
     return None
 
+# ✅ [핵심 추가] 데이터 리샘플링 함수
+def force_resample_data(df, target_fs=256, expected_duration_sec=180):
+    """
+    데이터가 부족할 경우, 예상 시간(180초)과 목표 주파수(256Hz)에 맞춰
+    데이터 개수를 강제로 늘립니다 (선형 보간).
+    """
+    current_len = len(df)
+    target_len = int(target_fs * expected_duration_sec) # 256 * 180 = 46080개
+    # 오차 범위 10% 이내면 굳이 리샘플링 안 함 (정상 데이터로 간주)
+    if abs(current_len - target_len) / target_len < 0.1:
+        return df
+    print(f"⚠️ 데이터 길이 보정 실행: {current_len}행 -> {target_len}행 (목표: {expected_duration_sec}초)")
+    
+    # 리샘플링 수행 (scipy.signal.resample 사용)
+    # 주의: resample은 Fourier 방식이라 데이터가 튀는 현상이 있을 수 있어, 
+    # 여기서는 안전하게 Pandas의 선형 보간(Linear Interpolation)을 권장합니다.
+    
+    # 1. 기존 인덱스를 시간 축(0 ~ 1)으로 정규화
+    old_indices = np.linspace(0, 1, current_len)
+    new_indices = np.linspace(0, 1, target_len)
+    
+    # 2. 새로운 DataFrame 생성
+    new_df = pd.DataFrame()
+    
+    # 3. 각 컬럼별로 보간(Interpolation) 수행
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            # np.interp(새로운x, 기존x, 기존y) -> 선형 보간
+            new_df[col] = np.interp(new_indices, old_indices, df[col].values)
+        else:
+            # 숫자가 아닌 컬럼(혹시 있다면)은 단순 복사 불가하므로 처리 제외
+            pass
+            
+    return new_df
+
 def calculate_concentration_index(processor, raw_signal):
     epsilon = 1e-10
     theta_wave = processor.butter_bandpass_filter(raw_signal, 4.0, 8.0)
@@ -61,7 +96,7 @@ def save_analysis_log(log_lines):
             f.write("\n".join(log_lines))
     except: pass
 
-# ✅ 수정됨: 전체 데이터를 받아서 Baseline 구분선을 그어주는 함수
+# 수정됨: 전체 데이터를 받아서 Baseline 구분선을 그어주는 함수
 def save_z_score_plot(full_z_fp1, full_z_fp2, threshold, ceiling, baseline_sec, fs=256):
     try:
         plt.close('all')
@@ -79,7 +114,7 @@ def save_z_score_plot(full_z_fp1, full_z_fp2, threshold, ceiling, baseline_sec, 
         # 기준선 그리기
         plt.axhline(y=threshold, color='green', linestyle='--', label=f'Concentration Threshold ({threshold})')
         
-        # ✅ Baseline(30초) 구분선 추가 (빨간 점선)
+        #  Baseline(30초) 구분선 추가 (빨간 점선)
         plt.axvline(x=baseline_sec, color='red', linestyle=':', linewidth=2, label='End of Baseline (30s)')
         
         # 그래프 꾸미기
@@ -113,6 +148,13 @@ def analyze_concentration_intervals(file_path, baseline_sec=30.0, z_threshold=0.
 
         if df.empty: return []
 
+        # ============================================================
+        # [수정 포인트] 데이터 로드 직후 리샘플링 수행
+        # 영상 길이가 3분(180초)이라고 가정합니다. 
+        # 만약 영상마다 길이가 다르다면 이 값을 인자로 받아야 합니다.
+        VIDEO_DURATION_SEC = 196     # 영상  길이에 따라 +30초를 더해서 계산을 해야함. 현재 영상 길이는 2분 46초. 검은 화면 30초
+        df = force_resample_data(df, target_fs=256, expected_duration_sec=VIDEO_DURATION_SEC)
+        # ============================================================
         fs = 256
         processor = SignalProcessor(fs)
         
@@ -145,7 +187,7 @@ def analyze_concentration_intervals(file_path, baseline_sec=30.0, z_threshold=0.
         z_fp1 = (idx_fp1 - np.mean(base_fp1)) / std_fp1
         z_fp2 = (idx_fp2 - np.mean(base_fp2)) / std_fp2
         
-        # ✅ [핵심 수정 1] 분석 결과와 상관없이 전체 그래프를 무조건 그림
+        # [핵심 수정 1] 분석 결과와 상관없이 전체 그래프를 무조건 그림
         # (잘린 데이터가 아닌 'z_fp1' 전체를 넘김)
         save_z_score_plot(z_fp1, z_fp2, z_threshold, z_ceiling, baseline_sec, fs)
 
@@ -179,7 +221,7 @@ def analyze_concentration_intervals(file_path, baseline_sec=30.0, z_threshold=0.
             if end_task_time - start >= 3.0:
                  intervals.append((start + baseline_sec, end_task_time + baseline_sec))
 
-        # ✅ [핵심 수정 2] 구간이 없어도 에러 메시지 대신 로그만 남기고 종료
+        # [핵심 수정 2] 구간이 없어도 에러 메시지 대신 로그만 남기고 종료
         if not intervals:
             save_analysis_log(["집중 구간 없음 (그래프 확인 요망)"])
             print("💡 집중 구간이 발견되지 않았습니다. 그래프를 확인하세요.")
