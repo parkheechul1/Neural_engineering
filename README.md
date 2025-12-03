@@ -55,7 +55,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ### Step 4. 중요 구간 판정 (Thresholding)
 - **판정 기준:** `Fp1` 또는 `Fp2` 채널 중 하나라도 설정된 **임계값(Z-Threshold)**을 초과하면 집중 상태로 간주합니다.
-- **최소 지속 시간:** 순간적인 노이즈를 배제하기 위해, **3초 이상** 지속된 구간만 최종 저장합니다.
+- **최소 지속 시간:** 순간적인 노이즈를 배제하기 위해, **5초 이상** 지속된 구간만 최종 저장합니다.
 
 ---
 

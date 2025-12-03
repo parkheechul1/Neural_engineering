@@ -1,4 +1,5 @@
 import sys
+import os
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QListWidget, QTextEdit,
                              QTabWidget, QStyle, QSlider, QLabel, QMessageBox, QProgressBar)
@@ -176,10 +177,23 @@ class SummaryApp(QWidget):
             QMessageBox.warning(self, "처리 중", "작업 진행 중입니다.")
             return
 
-        fileName, _ = QFileDialog.getOpenFileName(self, "파일 선택 (아무거나)", "", "Text Files (*.txt)")
-        if fileName == '': return
+        # [수정됨] 폴더 선택 다이얼로그로 변경
+        # 기본 경로는 C:/MAVE_RawData 로 설정 (없으면 현재 폴더)
+        default_dir = "C:/MAVE_RawData" if os.path.exists("C:/MAVE_RawData") else ""
+        folder_path = QFileDialog.getExistingDirectory(self, "뇌파 데이터 폴더 선택", default_dir)
 
-        self.current_timestamps_path = fileName
+        if folder_path == '': return  # 취소 누름
+
+        # 선택한 폴더 내에 Rawdata.txt가 있는지 확인
+        target_file_path = os.path.join(folder_path, "Rawdata.txt")
+
+        if not os.path.exists(target_file_path):
+            QMessageBox.critical(self, "파일 없음", f"선택한 폴더에 'Rawdata.txt' 파일이 없습니다.\n경로: {target_file_path}")
+            return
+
+        # 경로 확정
+        self.current_timestamps_path = target_file_path
+        
         self.loadTimestampButton.setEnabled(False)
         self.loadTimestampButton.setText("분석 및 요약 생성 중...")
         self.timestampList.clear()
@@ -187,6 +201,7 @@ class SummaryApp(QWidget):
         self.summaryProgressBar.setValue(0)
         self.summaryProgressBar.setVisible(True)
 
+        # Worker에게 'Rawdata.txt'의 전체 경로를 넘김
         self.worker_thread = Worker(self.current_video_path, self.current_timestamps_path, self.z_threshold)
         self.worker_thread.summaryReady.connect(self.onSummaryReady)
         self.worker_thread.progressUpdated.connect(self.onProgressUpdated)
