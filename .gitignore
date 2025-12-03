@@ -26,3 +26,5 @@ Thumbs.db
 
 # (선택)
 !timestamps.txt
+
+*.png

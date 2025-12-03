@@ -210,8 +210,13 @@ class SummaryApp(QWidget):
         self.worker_thread.start()
 
     def onSummaryReady(self, timestamp_str, summary_text, full_text):
-        item_text = f"[{timestamp_str}] {summary_text}"
+        # [수정 후] 위쪽 리스트에는 '복원된 원본 문장(full_text)'을 표시
+        item_text = f"[{timestamp_str}] {full_text}"
+        
         self.timestampList.addItem(item_text)
+        
+        # 데이터 저장 (이 부분은 그대로 둠)
+        # 키: 타임스탬프, 값: (요약, 원본) 튜플
         self.summaries[timestamp_str] = (summary_text, full_text)
 
     def onProgressUpdated(self, value, total):
