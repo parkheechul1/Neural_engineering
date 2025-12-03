@@ -78,7 +78,6 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
                        z_ceiling=Z_CEILING, min_focus_sec=MIN_FOCUS_DURATION_SEC):
     """
     Biomarkers.txt의 정확한 지표를 사용하여 데이터를 보간(Interpolation)하고 분석합니다.
-    min_focus_sec 변수를 사용하여 최소 지속 시간을 유동적으로 관리합니다.
     """
     print(f"✨ [Biomarkers 모드] 정밀 지표 데이터를 분석합니다: {file_path}")
     
@@ -99,7 +98,7 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
         times = [parse_time(t) for t in df['Time']]
         start_time = times[0]
         original_seconds = np.array([(t - start_time).total_seconds() for t in times])
-        # 2. 집중도 지표(Ratio) 계산
+        # 2. 집중도 지표(Ratio) 계산 (Beta/Alpha + Beta/Theta) / 2
         epsilon = 1e-6
         
         fp1_b = df['Fp1_Beta(%)'].values
@@ -125,6 +124,29 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
         
         mean_1, std_1 = np.mean(base_fp1), (np.std(base_fp1) if np.std(base_fp1) > 1e-6 else 1.0)
         mean_2, std_2 = np.mean(base_fp2), (np.std(base_fp2) if np.std(base_fp2) > 1e-6 else 1.0)
+        # ✅ [추가] 로그 및 설정값 출력
+        log_lines = []
+        log_lines.append("="*40)
+        log_lines.append("[EEG ANALYSIS SETTINGS]")
+        log_lines.append(f"* File Path: {file_path}")
+        log_lines.append(f"* Mode: BIOMARKERS (10 Hz Interpolated)")
+        log_lines.append(f"* Video Duration: {video_duration_sec:.1f}s (3m 16s)")
+        log_lines.append(f"* Baseline (Rest): {baseline_sec:.1f}s")
+        log_lines.append(f"* Z-Threshold: {z_threshold:.2f} (Concentration Start)")
+        log_lines.append(f"* Z-Ceiling: {z_ceiling:.2f} (Artifact Limit)")
+        log_lines.append(f"* Min Focus Duration: {min_focus_sec:.1f}s")
+        log_lines.append("="*40)
+        log_lines.append("[BASELINE STATISTICS] (First 30s)")
+        log_lines.append(f"* Fp1 Mean Index: {mean_1:.4f}")
+        log_lines.append(f"* Fp1 Std Dev: {std_1:.4f}")
+        log_lines.append(f"* Fp2 Mean Index: {mean_2:.4f}")
+        log_lines.append(f"* Fp2 Std Dev: {std_2:.4f}")
+        log_lines.append("="*40)
+        
+        for line in log_lines:
+            print(line)
+        save_analysis_log(log_lines)
+        # ----------------------------------------------------------------------------------
         # 5. Z-Score 변환
         z_fp1 = (interp_fp1 - mean_1) / std_1
         z_fp2 = (interp_fp2 - mean_2) / std_2
@@ -134,7 +156,6 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
         intervals = []
         start = None
         
-        # Threshold보다 크고(집중), Ceiling보다 작아야 함(정상 신호)
         is_active_fp1 = (z_fp1 > z_threshold) & (z_fp1 < z_ceiling)
         is_active_fp2 = (z_fp2 > z_threshold) & (z_fp2 < z_ceiling)
         is_active = is_active_fp1 | is_active_fp2
@@ -145,7 +166,6 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
             if active and start is None:
                 start = curr_t
             elif not active and start is not None:
-                # ✅ [수정] 변수(min_focus_sec) 사용
                 if curr_t - start >= min_focus_sec: 
                     intervals.append((start, curr_t))
                 start = None
@@ -154,7 +174,7 @@ def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC,
         if start is not None and (target_time_axis[-1] - start >= min_focus_sec):
             intervals.append((start, target_time_axis[-1]))
         if not intervals:
-            save_analysis_log(["집중 구간 없음 (Biomarker 그래프 확인 요망)"])
+            # save_analysis_log는 이미 위에서 호출되었으므로, 추가 로그는 콘솔에만 출력
             print("💡 집중 구간이 발견되지 않았습니다 (조건 미충족).")
             return []
         return intervals
@@ -250,6 +270,28 @@ def analyze_concentration_intervals(file_path,
         std_fp1 = np.std(base_fp1) if np.std(base_fp1) > 1e-10 else 1.0
         std_fp2 = np.std(base_fp2) if np.std(base_fp2) > 1e-10 else 1.0
         
+        # ✅ [추가] 로그 및 설정값 출력
+        log_lines = []
+        log_lines.append("="*40)
+        log_lines.append("[EEG ANALYSIS SETTINGS]")
+        log_lines.append(f"* File Path: {file_path}")
+        log_lines.append(f"* Mode: RAW DATA (256 Hz)")
+        log_lines.append(f"* Video Duration: {VIDEO_DURATION_SEC:.1f}s (3m 16s)")
+        log_lines.append(f"* Baseline (Rest): {baseline_sec:.1f}s")
+        log_lines.append(f"* Z-Threshold: {z_threshold:.2f} (Concentration Start)")
+        log_lines.append(f"* Z-Ceiling: {z_ceiling:.2f} (Artifact Limit)")
+        log_lines.append(f"* Min Focus Duration: {min_focus_sec:.1f}s")
+        log_lines.append("="*40)
+        log_lines.append("[BASELINE STATISTICS] (First 30s)")
+        log_lines.append(f"* Fp1 Mean Index: {np.mean(base_fp1):.4f}")
+        log_lines.append(f"* Fp1 Std Dev: {std_fp1:.4f}")
+        log_lines.append(f"* Fp2 Mean Index: {np.mean(base_fp2):.4f}")
+        log_lines.append(f"* Fp2 Std Dev: {std_fp2:.4f}")
+        log_lines.append("="*40)
+        for line in log_lines:
+            print(line)
+        save_analysis_log(log_lines)
+        # ----------------------------------------------------------------------------------
         z_fp1 = (idx_fp1 - np.mean(base_fp1)) / std_fp1
         z_fp2 = (idx_fp2 - np.mean(base_fp2)) / std_fp2
         
@@ -274,7 +316,6 @@ def analyze_concentration_intervals(file_path,
             if active and start is None:
                 start = curr_task_time
             elif not active and start is not None:
-                # ✅ [수정] 변수(min_focus_sec) 사용
                 if curr_task_time - start >= min_focus_sec: 
                     intervals.append((start + baseline_sec, curr_task_time + baseline_sec))
                 start = None
@@ -284,7 +325,7 @@ def analyze_concentration_intervals(file_path,
             if end_task_time - start >= min_focus_sec:
                  intervals.append((start + baseline_sec, end_task_time + baseline_sec))
         if not intervals:
-            save_analysis_log(["집중 구간 없음 (그래프 확인 요망)"])
+            print("💡 집중 구간이 발견되지 않았습니다 (그래프 확인 요망).")
             return []
         return intervals
     except Exception as e:
