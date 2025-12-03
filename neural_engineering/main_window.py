@@ -113,6 +113,7 @@ class SummaryApp(QWidget):
             self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(fileName)))
             self.playButton.setEnabled(True)
             self.current_video_path = fileName
+            self.mediaPlayer.play()
 
     def initUI(self):
         mainLayout = QHBoxLayout()
