@@ -1,4 +1,5 @@
 import sys
+import os
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QListWidget, QTextEdit,
                              QTabWidget, QStyle, QSlider, QLabel, QMessageBox, QProgressBar)
@@ -6,91 +7,120 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtCore import QUrl, Qt, QThread, pyqtSignal
 
+# 만든 모듈들 불러오기
 from .eeg_handler import load_timestamp_durations_from_file
 from .video_analyzer import summarize_audio_duration, get_ai_models
 
 
 class Worker(QThread):
-    # (타임스탬프, 요약결과, 전체텍스트) 3개를 전달하도록 수정
     summaryReady = pyqtSignal(str, str, str)
-    progressUpdated = pyqtSignal(int, int) # (현재, 전체)
+    progressUpdated = pyqtSignal(int, int)
     errorOccurred = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, video_path, timestamp_path):
+    def __init__(self, video_path, timestamp_path, z_threshold):
         super().__init__()
         self.video_path = video_path
         self.timestamp_path = timestamp_path
+        self.z_threshold = z_threshold
         self._is_running = True
 
     def run(self):
-        """스레드 시작 시 이 함수가 '백그라운드'에서 실행"""
         try:
             stt_model, summarizer_model = get_ai_models()
-            if not stt_model or not summarizer_model:
-                raise Exception("AI 모델 중 하나 이상이 로드되지 않았습니다.")
+            if not stt_model:
+                raise Exception("AI 모델 로드 실패")
 
-            # 1. [EEG 핸들러]에게 (시작, 종료) 구간 목록 요청 (수정됨)
-            durations = load_timestamp_durations_from_file(self.timestamp_path)
-            total_tasks = len(durations)
+            # 1. 뇌파 분석 실행 (여기서 1차 로그가 저장됨)
+            durations = load_timestamp_durations_from_file(self.timestamp_path, self.z_threshold)
+            
+            # [필터링] 30초 이후에 시작된 구간만 남기기 (초반 멍 때리기 구간 제외)
+            valid_durations = [d for d in durations if d[0] >= 30.0]
+            total_tasks = len(valid_durations)
 
             if total_tasks == 0:
-                raise Exception("타임스탬프 파일에 유효한 (시작, 종료) 구간 데이터가 없습니다.")
+                # 30초 이후에 잡힌 게 없으면 안내 메시지
+                print("30초 이후 유효한 집중 구간이 없습니다.")
+                self.finished.emit()
+                return
 
-            # 2. 각 구간별로 [AI 분석기]에게 요약 요청
-            for i, (start_sec, end_sec) in enumerate(durations):
-                if not self._is_running: # 중지 신호 확인
-                    break
+             # 로그 헤더 작성
+            with open("analysis_log.txt", "a", encoding="utf-8") as f:
+                f.write("\n" + "="*40 + "\n")
+                f.write(f"   [AI 심층 분석] (유효 구간: {total_tasks}개)\n")
+                f.write(f"   *전략: 초반 30초 제외 + 앞뒤 5초 문맥 확보\n")
+                f.write("="*40 + "\n")   
+
+            # 2. 구간별 AI 요약 실행
+            for i, (start_sec, end_sec) in enumerate(valid_durations):
+                if not self._is_running: break
+
+                # ▼▼▼ [핵심] 앞뒤 5초씩 살 붙이기 (Padding) ▼▼▼
+                # 시작은 0초보다 작아질 수 없으므로 max 사용
+                padded_start = max(0, start_sec - 5.0)
+                # 끝은 영상 길이를 넘을 수 없지만, video_analyzer에서 알아서 잘라줌
+                padded_end = end_sec + 5.0
+                # ▲▲▲ --------------------------------------- ▲▲▲
 
                 timestamp_str = f"{start_sec:.2f} s - {end_sec:.2f} s"
+                
+                # Gemini에게는 '넉넉한 시간(padded)'을 줍니다.
+                full_text, summary_text = summarize_audio_duration(self.video_path, padded_start, padded_end)
 
-                # [AI 분석기] 호출 (수정됨)
-                full_text, summary_text = summarize_audio_duration(self.video_path, start_sec, end_sec)
+                # 로그 저장
+                try:
+                    with open("analysis_log.txt", "a", encoding="utf-8") as f:
+                        f.write(f"\n⏰ 핵심 구간: {timestamp_str} (분석: {padded_start:.1f}~{padded_end:.1f}s)\n")
+                        f.write(f"   🗣️ 원본(확장): {full_text}\n")
+                        f.write(f"   📝 요약: {summary_text}\n")
+                        f.write("-" * 30 + "\n")
+                except Exception as e:
+                    print(f"로그 작성 실패: {e}")
 
-                # 3. UI로 결과 전송 (시그널 인자 3개로 수정)
                 self.summaryReady.emit(timestamp_str, summary_text, full_text)
                 self.progressUpdated.emit(i + 1, total_tasks)
 
         except Exception as e:
-            self.errorOccurred.emit(str(e)) # UI로 오류 전송
+            self.errorOccurred.emit(str(e))
         finally:
-            self.finished.emit() # UI로 작업 완료 신호 전송
+            self.finished.emit()
 
     def stop(self):
         self._is_running = False
 
 
-# 3. 메인 GUI 클래스 (수정됨)
 class SummaryApp(QWidget):
-    def __init__(self):
+    def __init__(self, z_threshold=1.0):
         super().__init__()
+        self.z_threshold = z_threshold
+        
         self.mediaPlayer = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         self.videoWidget = QVideoWidget()
         self.timestampList = QListWidget()
         self.summaryEdit = QTextEdit()
-
-        # (타임스탬프 문자열: (요약, 전체텍스트)) 튜플을 저장
+        self.fullTextEdit = QTextEdit()
         self.summaries = {}
         self.current_video_path = None
         self.current_timestamps_path = None
         self.worker_thread = None
 
         self.initUI()
+        self.setWindowTitle(f'뇌파 집중구간 오디오 요약 (Threshold: {self.z_threshold})')
 
     def loadVideo(self):
-        """1. 영상 불러오기 버튼 클릭 시 실행"""
         fileName, _ = QFileDialog.getOpenFileName(self, "영상 선택", "", "Video Files (*.mp4 *.avi *.mkv)")
         if fileName != '':
             self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(fileName)))
             self.playButton.setEnabled(True)
             self.current_video_path = fileName
+            self.mediaPlayer.play()
 
     def initUI(self):
         mainLayout = QHBoxLayout()
         leftLayout = QVBoxLayout()
         rightLayout = QVBoxLayout()
 
-        # --- 왼쪽: 비디오 플레이어 ---
+        # 왼쪽: 비디오
         leftLayout.addWidget(self.videoWidget)
         self.mediaPlayer.setVideoOutput(self.videoWidget)
         controlLayout = QHBoxLayout()
@@ -103,7 +133,7 @@ class SummaryApp(QWidget):
         controlLayout.addWidget(self.positionSlider)
         leftLayout.addLayout(controlLayout)
 
-        # --- 오른쪽: 컨트롤 패널 ---
+        # 오른쪽: 컨트롤 및 결과
         self.loadVideoButton = QPushButton("1. 영상 불러오기 (.mp4 등)")
         self.loadTimestampButton = QPushButton("2. 뇌파 데이터 불러오기 (자동 요약 시작)")
         self.summaryProgressBar = QProgressBar(self)
@@ -112,34 +142,27 @@ class SummaryApp(QWidget):
         rightLayout.addWidget(self.loadVideoButton)
         rightLayout.addWidget(self.loadTimestampButton)
         rightLayout.addWidget(self.summaryProgressBar)
-        rightLayout.addWidget(QLabel("요약 결과 (클릭 시 해당 구간 시작점으로 이동):"))
+        rightLayout.addWidget(QLabel("요약 결과 (클릭 시 확인):"))
         self.timestampList.setWordWrap(True)
         rightLayout.addWidget(self.timestampList)
 
-        # 탭 위젯 추가 (요약본 / 전체 텍스트 분리)
         self.summaryTabs = QTabWidget()
-        self.summaryEdit = QTextEdit() # 요약 탭
-        self.fullTextEdit = QTextEdit() # 전체 텍스트 탭
+        
+        # 텍스트 색상 강제 지정 (화면 안 보이는 문제 방지)
+        self.summaryEdit.setStyleSheet("QTextEdit { color: black; background-color: white; font-size: 14px; }")
+        self.fullTextEdit.setStyleSheet("QTextEdit { color: black; background-color: white; font-size: 14px; }")
+
         self.summaryEdit.setReadOnly(True)
         self.fullTextEdit.setReadOnly(True)
-
-        self.summaryTabs.addTab(self.summaryEdit, "AI 요약본")
-        self.summaryTabs.addTab(self.fullTextEdit, "전체 변환 텍스트")
-
+        self.summaryTabs.addTab(self.summaryEdit, "AI 요약 (Gemini)")
+        self.summaryTabs.addTab(self.fullTextEdit, "전체 텍스트 (Whisper)")
         rightLayout.addWidget(self.summaryTabs)
-
-        stt_model, summarizer_model = get_ai_models()
-        if not stt_model or not summarizer_model:
-            self.loadTimestampButton.setEnabled(False)
-            self.loadTimestampButton.setText("2. AI 로드 실패 (기능 비활성화)")
 
         mainLayout.addLayout(leftLayout, 2)
         mainLayout.addLayout(rightLayout, 1)
         self.setLayout(mainLayout)
-        self.setWindowTitle('뇌파 집중구간 오디오 요약 (Demo)')
         self.setGeometry(100, 100, 1200, 700)
 
-        # --- 시그널 연결 ---
         self.loadVideoButton.clicked.connect(self.loadVideo)
         self.loadTimestampButton.clicked.connect(self.loadTimestamps)
         self.timestampList.currentItemChanged.connect(self.jumpToTimestamp)
@@ -147,46 +170,54 @@ class SummaryApp(QWidget):
         self.mediaPlayer.positionChanged.connect(self.positionChanged)
         self.mediaPlayer.durationChanged.connect(self.durationChanged)
 
-    # --- loadTimestamps (스레드 시작) ---
     def loadTimestamps(self):
-        """'뇌파 데이터 불러오기' 클릭 시 자동 요약 스레드 시작"""
         if not self.current_video_path:
             QMessageBox.warning(self, "오류", "먼저 '1. 영상 불러오기'를 실행해주세요.")
             return
         if self.worker_thread and self.worker_thread.isRunning():
-            QMessageBox.warning(self, "처리 중", "이미 요약 작업이 진행 중입니다.")
+            QMessageBox.warning(self, "처리 중", "작업 진행 중입니다.")
             return
 
-        fileName, _ = QFileDialog.getOpenFileName(self, "타임스탬프 파일 선택", "", "Text Files (*.txt)")
-        if fileName == '':
+        # [수정됨] 폴더 선택 다이얼로그로 변경
+        # 기본 경로는 C:/MAVE_RawData 로 설정 (없으면 현재 폴더)
+        default_dir = "C:/MAVE_RawData" if os.path.exists("C:/MAVE_RawData") else ""
+        folder_path = QFileDialog.getExistingDirectory(self, "뇌파 데이터 폴더 선택", default_dir)
+
+        if folder_path == '': return  # 취소 누름
+
+        # 선택한 폴더 내에 Rawdata.txt가 있는지 확인
+        target_file_path = os.path.join(folder_path, "Rawdata.txt")
+
+        if not os.path.exists(target_file_path):
+            QMessageBox.critical(self, "파일 없음", f"선택한 폴더에 'Rawdata.txt' 파일이 없습니다.\n경로: {target_file_path}")
             return
 
-        self.current_timestamps_path = fileName
-
+        # 경로 확정
+        self.current_timestamps_path = target_file_path
+        
         self.loadTimestampButton.setEnabled(False)
-        self.loadTimestampButton.setText("뇌파 분석 및 AI 요약 중...")
+        self.loadTimestampButton.setText("분석 및 요약 생성 중...")
         self.timestampList.clear()
         self.summaries = {}
         self.summaryProgressBar.setValue(0)
         self.summaryProgressBar.setVisible(True)
 
-        # 스레드 생성 및 시작
-        self.worker_thread = Worker(self.current_video_path, self.current_timestamps_path)
-
-        # [수정] 새 시그널(인자 3개)에 연결
+        # Worker에게 'Rawdata.txt'의 전체 경로를 넘김
+        self.worker_thread = Worker(self.current_video_path, self.current_timestamps_path, self.z_threshold)
         self.worker_thread.summaryReady.connect(self.onSummaryReady)
         self.worker_thread.progressUpdated.connect(self.onProgressUpdated)
         self.worker_thread.errorOccurred.connect(self.onErrorOccurred)
         self.worker_thread.finished.connect(self.onWorkerFinished)
-
         self.worker_thread.start()
 
-    # --- QThread 시그널 처리 함수 (Slot) ---
     def onSummaryReady(self, timestamp_str, summary_text, full_text):
-        """스레드로부터 요약 결과(인자 3개)가 도착하면 호출됨"""
-        item_text = f"[{timestamp_str}] {summary_text}"
+        # [수정 후] 위쪽 리스트에는 '복원된 원본 문장(full_text)'을 표시
+        item_text = f"[{timestamp_str}] {full_text}"
+        
         self.timestampList.addItem(item_text)
-        # (요약, 전체텍스트) 튜플을 저장
+        
+        # 데이터 저장 (이 부분은 그대로 둠)
+        # 키: 타임스탬프, 값: (요약, 원본) 튜플
         self.summaries[timestamp_str] = (summary_text, full_text)
 
     def onProgressUpdated(self, value, total):
@@ -194,72 +225,51 @@ class SummaryApp(QWidget):
         self.summaryProgressBar.setValue(value)
 
     def onErrorOccurred(self, error_message):
-        QMessageBox.critical(self, "AI 요약 오류", error_message)
-        self.onWorkerFinished(error=True)
+        QMessageBox.critical(self, "오류", error_message)
+        self.onWorkerFinished()
 
-    def onWorkerFinished(self, error=False):
+    def onWorkerFinished(self):
         self.loadTimestampButton.setEnabled(True)
-        self.loadTimestampButton.setText("2. 뇌파 데이터 불러오기 (자동 요약 시작)")
+        self.loadTimestampButton.setText("2. 뇌파 데이터 불러오기")
         self.summaryProgressBar.setVisible(False)
-        if not error and self.summaryProgressBar.value() > 0:
-            QMessageBox.information(self, "완료", "모든 집중 구간의 자동 요약이 완료되었습니다.")
 
-    # --- jumpToTimestamp ---
     def jumpToTimestamp(self, current_item, previous_item):
-        """목록 클릭 시 해당 구간 시작점으로 이동, 탭에 내용 표시"""
         if current_item is None: return
         item_text = current_item.text()
+        
+        timestamp_str = ""
         try:
-            # 예: "[10.50 s - 20.00 s] This is a summary"
             timestamp_str = item_text[item_text.find("[")+1 : item_text.find("]")]
-            # "10.50 s - 20.00 s"
-
-            start_sec_str = timestamp_str.split(' ')[0]
-            timestamp_sec = float(start_sec_str)
-            position_ms = int(timestamp_sec * 1000)
-
-            self.mediaPlayer.setPosition(position_ms) # 영상 이동
-            self.mediaPlayer.pause()
-
-            # 딕셔너리에서 (요약, 전체텍스트) 튜플을 찾아 탭에 표시
-            key_str = timestamp_str.strip() # "10.50 s - 20.00 s"
-            summary_tuple = self.summaries.get(key_str)
-
+            key = timestamp_str.strip()
+            
+            # [수정] 텍스트 먼저 표시 (안전장치)
+            summary_tuple = self.summaries.get(key)
             if summary_tuple:
-                self.summaryEdit.setText(summary_tuple[0]) # 요약본
-                self.fullTextEdit.setText(summary_tuple[1]) # 전체 텍스트
+                self.summaryEdit.setText(summary_tuple[0])
+                self.fullTextEdit.setText(summary_tuple[1])
             else:
-                self.summaryEdit.setText("")
+                self.summaryEdit.setText("내용 없음")
                 self.fullTextEdit.setText("")
-
+                
         except Exception as e:
-            print(f"시간 이동/내용 표시 오류: {e}")
-            self.summaryEdit.setText("")
-            self.fullTextEdit.setText("")
+            print(f"GUI 오류: {e}")
 
-    # --- 미디어 플레이어 함수들 ---
+        # 비디오 이동 (에러 무시)
+        try:
+            if timestamp_str:
+                start_sec = float(timestamp_str.split(' ')[0])
+                self.mediaPlayer.setPosition(int(start_sec * 1000))
+                self.mediaPlayer.pause()
+        except: pass
+
     def playPause(self):
-        # (이하 코드는 이전과 동일)
-        if self.mediaPlayer.state() == QMediaPlayer.PlayingState:
-            self.mediaPlayer.pause()
-        else:
-            self.mediaPlayer.play()
-
+        if self.mediaPlayer.state() == QMediaPlayer.PlayingState: self.mediaPlayer.pause()
+        else: self.mediaPlayer.play()
     def mediaStateChanged(self, state):
-        if self.mediaPlayer.state() == QMediaPlayer.PlayingState:
-            self.playButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
-        else:
-            self.playButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-
-    def positionChanged(self, position):
-        self.positionSlider.setValue(position)
-
-    def durationChanged(self, duration):
-        self.positionSlider.setRange(0, duration)
-
-    def setPosition(self, position):
-        self.mediaPlayer.setPosition(position)
-
+        self.playButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPause if state == QMediaPlayer.PlayingState else QStyle.SP_MediaPlay))
+    def positionChanged(self, position): self.positionSlider.setValue(position)
+    def durationChanged(self, duration): self.positionSlider.setRange(0, duration)
+    def setPosition(self, position): self.mediaPlayer.setPosition(position)
     def closeEvent(self, event):
         if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.stop()

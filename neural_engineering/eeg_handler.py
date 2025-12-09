@@ -1,144 +1,375 @@
 import os
+
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, lfilter
+from datetime import datetime
 
-# --- [1] 신호 처리 클래스 (preprocess.py, iir.py 로직 통합) ---
+import matplotlib
+matplotlib.use('Agg') # 화면 표시 없이 파일 저장 전용 모드
+import matplotlib.pyplot as plt
+
+# ==================================================================================
+# ✅ [설정] 하드코딩 제거 및 전역 변수 설정
+# ==================================================================================
+MIN_FOCUS_DURATION_SEC = 5.0  # 최소 집중 유지 시간 (기존 3.0 -> 5.0초로 변경)
+VIDEO_DURATION_SEC = 196      # 영상 전체 길이 (2분46초 + 30초)
+Z_THRESHOLD = 0.7             # 집중 기준값 (Z-Score)
+Z_CEILING = 4.0               # 노이즈(근육) 기준값 (이보다 크면 무시)
+# ==================================================================================
+# 1. 공통 유틸리티 (그래프 저장 등)
+# ==================================================================================
+def save_z_score_plot(time_axis, full_z_fp1, full_z_fp2, threshold, ceiling, baseline_sec, mode="Rawdata"):
+    try:
+        plt.close('all')
+        plt.figure(figsize=(10, 5))
+        
+        # 전체 데이터 그리기
+        plt.plot(time_axis, full_z_fp1, label='Fp1 Z-Score', color='blue', alpha=0.6, linewidth=1)
+        plt.plot(time_axis, full_z_fp2, label='Fp2 Z-Score', color='orange', alpha=0.6, linewidth=1)
+        
+        # 기준선(Threshold) 그리기 - 초록색 점선
+        plt.axhline(y=threshold, color='green', linestyle='--', label=f'Threshold ({threshold})')
+        
+        # 천장선(Ceiling/Artifact) 그리기 - 빨간색 점선 (이 위는 노이즈)
+        plt.axhline(y=ceiling, color='red', linestyle='-.', label=f'Artifact Ceiling ({ceiling})')
+        
+        # Baseline(30초) 구분선
+        plt.axvline(x=baseline_sec, color='red', linestyle=':', linewidth=2, label='End of Baseline (30s)')
+        
+        plt.title(f"Concentration Z-Score Flow ({mode} Mode)")
+        plt.xlabel("Time (seconds)")
+        plt.ylabel("Z-Score (rel. to Baseline)")
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        plt.ylim(bottom=-2, top=6) # 4.0 이상도 보이도록 y축 조정
+        # 저장 (절대 경로)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.dirname(current_dir)
+        save_path = os.path.join(project_dir, "z_score_graph.png")
+        
+        plt.savefig(save_path)
+        print(f"📊 그래프 저장 완료: {save_path}")
+        plt.close()
+    except Exception as e:
+        print(f"🚨 그래프 저장 실패: {e}")
+
+def save_analysis_log(log_lines):
+    try:
+        with open("analysis_log.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(log_lines))
+    except: pass
+
+# ==================================================================================
+# 2. [신규 기능] Biomarkers.txt 전용 처리기 (데이터 유실 시 강력 추천)
+# ==================================================================================
+def parse_time(time_str):
+    """ 시간 문자열(19:06:22.019)을 datetime 객체로 변환 """
+    try:
+        return datetime.strptime(time_str.strip(), "%H:%M:%S.%f")
+    except:
+        try:
+            return datetime.strptime(time_str.strip(), "%H:%M:%S")
+        except:
+            return datetime.now()
+
+def analyze_biomarkers(file_path, video_duration_sec=VIDEO_DURATION_SEC, 
+                       baseline_sec=30.0, z_threshold=Z_THRESHOLD, 
+                       z_ceiling=Z_CEILING, min_focus_sec=MIN_FOCUS_DURATION_SEC):
+    """
+    Biomarkers.txt의 정확한 지표를 사용하여 데이터를 보간(Interpolation)하고 분석합니다.
+    """
+    print(f"✨ [Biomarkers 모드] 정밀 지표 데이터를 분석합니다: {file_path}")
+    
+    try:
+        # 파일 읽기
+        try:
+            df = pd.read_csv(file_path, delimiter="\t", encoding='cp949')
+        except:
+            df = pd.read_csv(file_path, delimiter="\t", encoding='utf-8')
+        df.columns = [c.strip() for c in df.columns]
+        required_cols = ['Time', 'Fp1_Theta(%)', 'Fp1_Alpha(%)', 'Fp1_Beta(%)', 
+                                 'Fp2_Theta(%)', 'Fp2_Alpha(%)', 'Fp2_Beta(%)']
+        
+        if not all(col in df.columns for col in required_cols):
+            print("🚨 Biomarkers.txt 형식이 올바르지 않습니다.")
+            return None
+        # 1. 시간 축 생성
+        times = [parse_time(t) for t in df['Time']]
+        start_time = times[0]
+        original_seconds = np.array([(t - start_time).total_seconds() for t in times])
+        # 2. 집중도 지표(Ratio) 계산 (Beta/Alpha + Beta/Theta) / 2
+        epsilon = 1e-6
+        
+        fp1_b = df['Fp1_Beta(%)'].values
+        fp1_a = df['Fp1_Alpha(%)'].values + epsilon
+        fp1_t = df['Fp1_Theta(%)'].values + epsilon
+        idx_fp1 = ((fp1_b / fp1_a) + (fp1_b / fp1_t)) / 2.0
+        
+        fp2_b = df['Fp2_Beta(%)'].values
+        fp2_a = df['Fp2_Alpha(%)'].values + epsilon
+        fp2_t = df['Fp2_Theta(%)'].values + epsilon
+        idx_fp2 = ((fp2_b / fp2_a) + (fp2_b / fp2_t)) / 2.0
+        # 3. 데이터 보간 (Interpolation)
+        target_fs = 10 
+        target_len = int(video_duration_sec * target_fs)
+        target_time_axis = np.linspace(0, video_duration_sec, target_len)
+        
+        interp_fp1 = np.interp(target_time_axis, original_seconds, idx_fp1)
+        interp_fp2 = np.interp(target_time_axis, original_seconds, idx_fp2)
+        # 4. Baseline 통계 산출
+        base_mask = target_time_axis <= baseline_sec
+        base_fp1 = interp_fp1[base_mask]
+        base_fp2 = interp_fp2[base_mask]
+        
+        mean_1, std_1 = np.mean(base_fp1), (np.std(base_fp1) if np.std(base_fp1) > 1e-6 else 1.0)
+        mean_2, std_2 = np.mean(base_fp2), (np.std(base_fp2) if np.std(base_fp2) > 1e-6 else 1.0)
+        # ✅ [추가] 로그 및 설정값 출력
+        log_lines = []
+        log_lines.append("="*40)
+        log_lines.append("[EEG ANALYSIS SETTINGS]")
+        log_lines.append(f"* File Path: {file_path}")
+        log_lines.append(f"* Mode: BIOMARKERS (10 Hz Interpolated)")
+        log_lines.append(f"* Video Duration: {video_duration_sec:.1f}s (3m 16s)")
+        log_lines.append(f"* Baseline (Rest): {baseline_sec:.1f}s")
+        log_lines.append(f"* Z-Threshold: {z_threshold:.2f} (Concentration Start)")
+        log_lines.append(f"* Z-Ceiling: {z_ceiling:.2f} (Artifact Limit)")
+        log_lines.append(f"* Min Focus Duration: {min_focus_sec:.1f}s")
+        log_lines.append("="*40)
+        log_lines.append("[BASELINE STATISTICS] (First 30s)")
+        log_lines.append(f"* Fp1 Mean Index: {mean_1:.4f}")
+        log_lines.append(f"* Fp1 Std Dev: {std_1:.4f}")
+        log_lines.append(f"* Fp2 Mean Index: {mean_2:.4f}")
+        log_lines.append(f"* Fp2 Std Dev: {std_2:.4f}")
+        log_lines.append("="*40)
+        
+        for line in log_lines:
+            print(line)
+        save_analysis_log(log_lines)
+        # ----------------------------------------------------------------------------------
+        # 5. Z-Score 변환
+        z_fp1 = (interp_fp1 - mean_1) / std_1
+        z_fp2 = (interp_fp2 - mean_2) / std_2
+        # 6. 그래프 저장
+        save_z_score_plot(target_time_axis, z_fp1, z_fp2, z_threshold, z_ceiling, baseline_sec, mode="Biomarkers")
+        # 7. 구간 추출 로직
+        intervals = []
+        start = None
+        
+        is_active_fp1 = (z_fp1 > z_threshold) & (z_fp1 < z_ceiling)
+        is_active_fp2 = (z_fp2 > z_threshold) & (z_fp2 < z_ceiling)
+        is_active = is_active_fp1 | is_active_fp2
+        for i, active in enumerate(is_active):
+            curr_t = target_time_axis[i]
+            
+            if curr_t < baseline_sec: continue
+            if active and start is None:
+                start = curr_t
+            elif not active and start is not None:
+                if curr_t - start >= min_focus_sec: 
+                    intervals.append((start, curr_t))
+                start = None
+        
+        # 마지막 구간 처리
+        if start is not None and (target_time_axis[-1] - start >= min_focus_sec):
+            intervals.append((start, target_time_axis[-1]))
+        if not intervals:
+            # save_analysis_log는 이미 위에서 호출되었으므로, 추가 로그는 콘솔에만 출력
+            print("💡 집중 구간이 발견되지 않았습니다 (조건 미충족).")
+            return []
+        return intervals
+    except Exception as e:
+        print(f"🚨 Biomarkers 분석 중 오류: {e}")
+        return None 
+
+# ==================================================================================
+# 3. 기존 Rawdata 처리기 (Fallback 용도)
+# ==================================================================================
 class SignalProcessor:
     def __init__(self, fs=256):
         self.fs = fs
-
     def butter_bandpass_filter(self, data, lowcut, highcut, order=2):
-        """Bandpass Filter (특정 주파수 대역만 남김)"""
         nyq = 0.5 * self.fs
         low = lowcut / nyq
         high = highcut / nyq
         b, a = butter(order, [low, high], btype="band")
         y = lfilter(b, a, data)
         return y
-
-    def get_power(self, data):
-        """신호의 파워(세기) 계산 (Squaring)"""
-        return data ** 2
-
+    def get_power(self, data): return data ** 2
     def moving_average(self, data, window_sec=1.0):
-        """이동 평균 (Smoothing)"""
         window_size = int(window_sec * self.fs)
         return np.convolve(data, np.ones(window_size)/window_size, mode='same')
 
-# --- [2] 파일 로딩 및 분석 로직 ---
+def force_resample_data(df, target_fs=256, expected_duration_sec=196):
+    current_len = len(df)
+    target_len = int(target_fs * expected_duration_sec) 
+    
+    if abs(current_len - target_len) / target_len < 0.1:
+        return df 
+    
+    print(f"⚠️ 데이터 길이 보정 실행: {current_len}행 -> {target_len}행 (목표: {expected_duration_sec}초)")
+    
+    old_indices = np.linspace(0, 1, current_len)
+    new_indices = np.linspace(0, 1, target_len)
+    new_df = pd.DataFrame()
+    
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            new_df[col] = np.interp(new_indices, old_indices, df[col].values)
+            
+    return new_df
 
-def get_latest_rawdata_path(base_path="C:/MAVE_RawData"):
-    """C:/MAVE_RawData에서 가장 최신 Rawdata.txt 파일을 찾습니다."""
-    if not os.path.exists(base_path):
-        print(f"경고: {base_path} 경로를 찾을 수 없습니다. 테스트 모드로 동작합니다.")
-        return None
+def calculate_concentration_index(processor, raw_signal):
+    epsilon = 1e-10
+    theta_wave = processor.butter_bandpass_filter(raw_signal, 4.0, 8.0)
+    alpha_wave = processor.butter_bandpass_filter(raw_signal, 8.0, 13.0)
+    beta_wave = processor.butter_bandpass_filter(raw_signal, 13.0, 30.0)
+    
+    theta_power = processor.moving_average(processor.get_power(theta_wave))
+    alpha_power = processor.moving_average(processor.get_power(alpha_wave))
+    beta_power = processor.moving_average(processor.get_power(beta_wave))
+    
+    ba_ratio = beta_power / (alpha_power + epsilon)
+    bt_ratio = beta_power / (theta_power + epsilon)
+    return (ba_ratio + bt_ratio) / 2.0
 
-    rawdata_folders = [f for f in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, f))]
-    if not rawdata_folders:
-        print("데이터 폴더가 비어있습니다.")
-        return None
-
-    rawdata_folders.sort()
-    latest_folder = rawdata_folders[-1]
-    file_path = os.path.join(base_path, latest_folder, "Rawdata.txt")
-
-    if not os.path.exists(file_path):
-        print(f"파일 없음: {file_path}")
-        return None
-
-    return file_path
-
-def analyze_concentration_intervals(file_path):
-    """
-    뇌파 데이터를 분석하여 '집중' 구간 (Beta/Alpha 비율이 높은 구간)을 찾습니다.
-    """
+def analyze_concentration_intervals(file_path, 
+                                    baseline_sec=30.0, 
+                                    z_threshold=Z_THRESHOLD, 
+                                    z_ceiling=Z_CEILING, 
+                                    min_focus_sec=MIN_FOCUS_DURATION_SEC):
+    print(f"📂 Rawdata 분석 모드 실행: {file_path}")
     try:
-        # 1. 데이터 읽기 (참고 프로젝트 형식: 탭 구분, cp949 인코딩 가능성)
-        df = pd.read_csv(file_path, delimiter="\t", encoding='cp949')
+        try:
+            df = pd.read_csv(file_path, delimiter="\t", encoding='cp949')
+        except:
+            df = pd.read_csv(file_path, delimiter="\t", encoding='utf-8')
         if df.empty: return []
-
-        # 2. 채널 선택 (Fp1, Fp2 등)
-        # 데이터에 'EEG_Fp1' 컬럼이 있다고 가정
-        target_col = 'EEG_Fp1' if 'EEG_Fp1' in df.columns else df.columns[1]
-        raw_signal = df[target_col].values
-
+        df = force_resample_data(df, target_fs=256, expected_duration_sec=VIDEO_DURATION_SEC)
+        
         fs = 256
         processor = SignalProcessor(fs)
-
-        # 3. [핵심 알고리즘] 집중도 계산: Beta / Alpha Ratio
-        # (1) Alpha파 (8-13Hz): 이완할 때 나옴 (집중하면 감소)
-        alpha_wave = processor.butter_bandpass_filter(raw_signal, 8.0, 13.0)
-        alpha_power = processor.moving_average(processor.get_power(alpha_wave))
-
-        # (2) Beta파 (13-30Hz): 집중할 때 나옴 (집중하면 증가)
-        beta_wave = processor.butter_bandpass_filter(raw_signal, 13.0, 30.0)
-        beta_power = processor.moving_average(processor.get_power(beta_wave))
-
-        # (3) 비율 계산 (0으로 나누기 방지 위해 아주 작은 수 더함)
-        concentration_index = beta_power / (alpha_power + 1e-6)
-
-        # 4. 집중 구간 검출 (Thresholding)
-        # 평균보다 0.5 표준편차 이상 높은 구간을 집중으로 간주
-        threshold = np.mean(concentration_index) + (np.std(concentration_index) * 0.5)
-        is_concentrating = concentration_index > threshold
-
+        
+        col_fp1 = next((c for c in df.columns if 'Fp1' in c), df.columns[1])
+        col_fp2 = next((c for c in df.columns if 'Fp2' in c), df.columns[2])
+        signal_fp1 = df[col_fp1].values
+        signal_fp2 = df[col_fp2].values
+        
+        idx_fp1 = calculate_concentration_index(processor, signal_fp1)
+        idx_fp2 = calculate_concentration_index(processor, signal_fp2)
+        
+        base_samples = int(baseline_sec * fs)
+        
+        if len(idx_fp1) <= base_samples:
+            base_fp1 = idx_fp1
+            base_fp2 = idx_fp2
+        else:
+            base_fp1 = idx_fp1[:base_samples]
+            base_fp2 = idx_fp2[:base_samples]
+        
+        std_fp1 = np.std(base_fp1) if np.std(base_fp1) > 1e-10 else 1.0
+        std_fp2 = np.std(base_fp2) if np.std(base_fp2) > 1e-10 else 1.0
+        
+        # ✅ [추가] 로그 및 설정값 출력
+        log_lines = []
+        log_lines.append("="*40)
+        log_lines.append("[EEG ANALYSIS SETTINGS]")
+        log_lines.append(f"* File Path: {file_path}")
+        log_lines.append(f"* Mode: RAW DATA (256 Hz)")
+        log_lines.append(f"* Video Duration: {VIDEO_DURATION_SEC:.1f}s (3m 16s)")
+        log_lines.append(f"* Baseline (Rest): {baseline_sec:.1f}s")
+        log_lines.append(f"* Z-Threshold: {z_threshold:.2f} (Concentration Start)")
+        log_lines.append(f"* Z-Ceiling: {z_ceiling:.2f} (Artifact Limit)")
+        log_lines.append(f"* Min Focus Duration: {min_focus_sec:.1f}s")
+        log_lines.append("="*40)
+        log_lines.append("[BASELINE STATISTICS] (First 30s)")
+        log_lines.append(f"* Fp1 Mean Index: {np.mean(base_fp1):.4f}")
+        log_lines.append(f"* Fp1 Std Dev: {std_fp1:.4f}")
+        log_lines.append(f"* Fp2 Mean Index: {np.mean(base_fp2):.4f}")
+        log_lines.append(f"* Fp2 Std Dev: {std_fp2:.4f}")
+        log_lines.append("="*40)
+        for line in log_lines:
+            print(line)
+        save_analysis_log(log_lines)
+        # ----------------------------------------------------------------------------------
+        z_fp1 = (idx_fp1 - np.mean(base_fp1)) / std_fp1
+        z_fp2 = (idx_fp2 - np.mean(base_fp2)) / std_fp2
+        
+        time_axis = np.linspace(0, len(z_fp1)/fs, len(z_fp1))
+        
+        save_z_score_plot(time_axis, z_fp1, z_fp2, z_threshold, z_ceiling, baseline_sec, mode="Rawdata")
+        if len(z_fp1) > base_samples:
+            task_z_fp1 = z_fp1[base_samples:]
+            task_z_fp2 = z_fp2[base_samples:]
+        else:
+            return []
+        # 4.0 이상은 노이즈로 필터링
+        is_active_fp1 = (task_z_fp1 > z_threshold) & (task_z_fp1 < z_ceiling)
+        is_active_fp2 = (task_z_fp2 > z_threshold) & (task_z_fp2 < z_ceiling)
+        is_active = is_active_fp1 | is_active_fp2
+        
         intervals = []
-        start_time = None
-
-        for i, active in enumerate(is_concentrating):
-            current_time = i / fs
-            if active and start_time is None:
-                start_time = current_time
-            elif not active and start_time is not None:
-                end_time = current_time
-                # 3초 이상 지속된 집중만 인정
-                if end_time - start_time >= 3.0:
-                    intervals.append((start_time, end_time))
-                start_time = None
-
-        if start_time is not None:
-            end_time = len(concentration_index) / fs
-            if end_time - start_time >= 3.0:
-                intervals.append((start_time, end_time))
-
-        # 구간이 없으면 전체 길이의 중간 부분이라도 반환 (데모용)
+        start = None
+        
+        for i, active in enumerate(is_active):
+            curr_task_time = i / fs
+            if active and start is None:
+                start = curr_task_time
+            elif not active and start is not None:
+                if curr_task_time - start >= min_focus_sec: 
+                    intervals.append((start + baseline_sec, curr_task_time + baseline_sec))
+                start = None
+                
+        if start is not None:
+            end_task_time = len(is_active)/fs
+            if end_task_time - start >= min_focus_sec:
+                 intervals.append((start + baseline_sec, end_task_time + baseline_sec))
         if not intervals:
-            total_time = len(concentration_index) / fs
-            return [(total_time * 0.3, total_time * 0.7)]
-
+            print("💡 집중 구간이 발견되지 않았습니다 (그래프 확인 요망).")
+            return []
         return intervals
-
     except Exception as e:
-        print(f"분석 오류: {e}")
-        return [(10.0, 20.0)] # 오류 시 기본값
+        print(f"🚨 Rawdata 분석 오류: {e}")
+        return []
 
-# --- [3] 메인 윈도우에서 호출하는 함수 ---
-
-def load_timestamp_durations_from_file(timestamp_path):
-    """
-    [최종 동작]
-    1. C:/MAVE_RawData에서 최신 파일을 찾습니다.
-    2. 파일이 있으면 뇌파 분석을 수행하여 집중 구간을 반환합니다.
-    3. 파일이 없으면(테스트 환경), 사용자가 선택한 timestamp.txt를 읽습니다.
-    """
-    real_data_path = get_latest_rawdata_path()
-
-    if real_data_path:
-        print(f"실제 뇌파 데이터 분석 시작: {real_data_path}")
-        return analyze_concentration_intervals(real_data_path)
-    else:
-        print("실제 뇌파 데이터를 찾을 수 없어 모의 데이터(txt)를 사용합니다.")
-        durations = []
+# ==================================================================================
+# 4. [메인 진입점] 파일 탐색 및 실행 관리
+# ==================================================================================
+def get_latest_rawdata_path(base_path="C:/MAVE_RawData"):
+    if os.path.exists(base_path):
         try:
-            with open(timestamp_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().split(',')
-                    if len(parts) == 2:
-                        durations.append((float(parts[0]), float(parts[1])))
-        except Exception:
-            pass
-        # 모의 데이터도 없으면 기본값 반환
-        if not durations:
-            return [(10.0, 20.0)]
-        return durations
+            all_folders = [os.path.join(base_path, d) for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+            if all_folders:
+                latest_folder_path = max(all_folders, key=os.path.getctime)
+                return os.path.join(latest_folder_path, "Rawdata.txt")
+        except: pass
+    return None
+
+def load_timestamp_durations_from_file(file_path=None, ignored=None):
+    if file_path and os.path.exists(file_path):
+        target_path = file_path
+    else:
+        target_path = get_latest_rawdata_path()
+    
+    if not target_path:
+        print("🚨 유효한 Rawdata.txt 파일을 찾을 수 없습니다.")
+        return []
+    folder_path = os.path.dirname(target_path)
+    biomarker_path = os.path.join(folder_path, "Biomarkers.txt")
+    
+    # [설정] 함수 호출 시 전역 변수 값 사용
+    if os.path.exists(biomarker_path):
+        result = analyze_biomarkers(biomarker_path, 
+                                    video_duration_sec=VIDEO_DURATION_SEC, 
+                                    z_threshold=Z_THRESHOLD, 
+                                    z_ceiling=Z_CEILING, 
+                                    min_focus_sec=MIN_FOCUS_DURATION_SEC)
+        if result is not None:
+            return result
+        else:
+            print("⚠️ Biomarkers 분석 실패, Rawdata 분석으로 넘어갑니다.")
+    # Rawdata fallback
+    return analyze_concentration_intervals(target_path, 
+                                           z_threshold=Z_THRESHOLD, 
+                                           z_ceiling=Z_CEILING, 
+                                           min_focus_sec=MIN_FOCUS_DURATION_SEC)
