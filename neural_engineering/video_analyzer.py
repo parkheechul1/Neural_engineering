@@ -81,6 +81,13 @@ def summarize_audio_duration(video_path, start_sec, end_sec):
 
     try:
         with VideoFileClip(video_path) as video:
+            
+            #[수정된 부분] 실제 영상 길이를 넘지 않도록 보정
+            if end_sec > video.duration:
+                end_sec = video.duration
+            # (안전장치) 보정 후 시작 시간이 종료 시간보다 크거나 같으면 처리 중단
+            if start_sec >= end_sec:
+                return "(구간 오류)", "(영상 끝부분이라 요약할 내용이 없음)"
             audio_clip = video.subclip(start_sec, end_sec).audio
             # 오디오가 없는 경우 처리
             if audio_clip is None:
